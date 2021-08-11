@@ -1,0 +1,387 @@
+---
+title: "BUAN 6356: Project Update 2"
+author: |
+  | Group 8 
+  | Melissa Cunningham
+  | Sudhindra Srinivasa Patri
+  | Vivek Shrimali
+  | Aralyn Tran
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output: pdf_document
+---
+
+```{r loadPackages, warning=FALSE, message=FALSE, results='hide' }
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, reshape, gplots, ggmap,leaps, 
+               mlbench, data.table, factoextra,GGally,ggplot2,forecast,MASS,
+               Data.Table,usmap,rpart, rpart.plot, caret,
+               randomForest, gbm, tree, corrplot, elasticnet, glmnet)
+theme_set(theme_classic()) 
+```
+
+
+### Importing Data
+```{r Data Import}
+carog.df <- read.csv("vehicles.csv")
+
+#boxplots of extreme outliers
+#Options added to remove scientific notation on graphs
+options(scipen=999)
+#price outliers
+ggplot(data=carog.df,aes(x=condition,y=price))+geom_boxplot(outlier.color = "red")+
+    labs(title='Price vs Condition Boxplots - Original Data',x='Vehicle Condition',y='Vehicle Price ($)')
+
+#Odometer outliers
+ggplot(data=carog.df,aes(x=condition,y=odometer))+geom_boxplot(outlier.color = "red")+
+      labs(title='Odometer vs Condition Boxplots - Original Data',x='Vehicle Condition',y='Vehicle Odometer')
+```
+
+
+```{r Initial Data CleanUp}
+car.df <- carog.df
+
+#Removing first 27 NULL records
+#Removing URL and description columns
+car.df <- car.df[-c(1:27),-c(2,4,15,20,21)]
+
+#Converting Post Date to date
+car.df$posting_date <- as.Date(car.df$posting_date)
+```
+
+###Exploratory Data Analysis
+```{r Initial Data CleanUp}
+car.df <- carog.df
+
+#Removing first 27 NULL records
+#Removing URL and description columns
+car.df <- car.df[-c(1:27),-c(2,4,15,20,21)]
+
+#Converting Post Date to date
+car.df$posting_date <- as.Date(car.df$posting_date)
+
+summary(car.df)
+#Post dates vary between 4/4/2021 and 5/4/2021
+#373,382 observations
+#24 variables
+```
+
+###Analysis on Numerical Columns
+The numerical columns are price, year, and odometer. Several vehicles have a price of \$0 and some vehicles are more than \$3.5M. To narrow the scope of our dataset, price is limited to the range \$1,000 to \$500,000. For the variable year, there were several records with a year of 2022. Since 2022 cars have not been released yet, we know these records are incorrect and were therefore dropped. Taking 2021 - year provides us with the vehicle's age. This will be more useful in the model than using the year variable as is. The 3rd numerical variable is odometer reading. There are some vehicles with 0 miles and some vehicles had over 1M miles. To keep the range realistic, odometer readings must be greater than 0 and less than 300,000 miles.
+```{r transforming numerical columns}
+options(scipen = 999)
+#Original summary, not filtered
+summary(car.df$price)
+
+#Filtering out low and high priced cars
+car.df <- car.df %>%
+  filter(price >=1000 & price <= 500000)
+
+#Price summary on filtered data
+summary(car.df$price)
+
+#Filtering car year less than 2022 and creating new column age
+car.df <- car.df %>%
+  filter(year < 2022)
+car.df$age <- 2021 - car.df$year
+
+#Summary of the new age column
+summary(car.df$age)
+
+#Filtering car odometer to defined range
+car.df <- car.df %>%
+  filter(odometer > 0 & odometer < 300000)
+
+#Summary of filtered odometer data
+summary(car.df$odometer)
+
+#Histogram of Price, Odometer and Age
+ggplot(car.df,aes(x=price))+geom_histogram(color='blue',fill='light blue')+xlim(0,100000)+
+  labs(title='Histogram of Vehicle Prices',xlab='Vehicle Price ($)',ylab='Frequency')
+
+ggplot(car.df,aes(x=odometer))+geom_histogram(color='blue',fill='light blue')+
+  labs(title='Histogram of Vehicle Odometer',xlab='Vehicle Odometer',ylab='Frequency')
+
+ggplot(car.df,aes(x=age))+geom_histogram(color='blue',fill='light blue')+
+  labs(title='Histogram of Vehicle Age',xlab='Vehicle Age (Years)',ylab='Frequency')
+
+```
+
+###Data Cleaning and Processing
+```{r categorical variables}
+#Correlations between numerical variables?
+car_num <- car.df[,c('price','odometer','age')]
+M <- cor(car_num)
+corrplot(M,method='number')
+
+#Categorical variables to explore: manufacturer, condition, cylinders, fuel, transmission, drive, size, type, paint_color
+
+#are there any duplicate rows?
+#filter(car.df,duplicated(car.df))
+#No
+
+table(car.df$manufacturer)
+#what are the blank, missing manufacturers?
+#carsDT[manufacturer=='',.N, by=model]
+#cleaning manufacturer info for missing records
+car.df <- car.df %>%
+  mutate(clean_man = ifelse(grepl("SCION",toupper(car.df$model)), "scion", ifelse(grepl("SMART",toupper(car.df$model)),"smart",ifelse(grepl("MASERATI",toupper(car.df$model)),"maserati",ifelse(grepl("GENESIS",toupper(car.df$model)),"hyundai",ifelse(grepl("HUMMER",toupper(car.df$model)),"hummer",ifelse(grepl("INTERNATIONAL",toupper(car.df$model)),"international",ifelse(grepl("ISUZU",toupper(car.df$model)),"isuzu",ifelse(grepl("FREIGHTLINER",toupper(car.df$model)),"freightliner",ifelse(grepl("SAAB",toupper(car.df$model)),"saab",ifelse(grepl("BLUE BIRD",toupper(car.df$model)),"bluebird",ifelse(grepl("FORD",toupper(car.df$model)),"ford",manufacturer)))))))))))) %>%
+  filter(!model %in% c('2017','2018','BUY HERE PAY HERE')) %>%
+  mutate(clean_man = replace(clean_man,clean_man=='',"other"))
+
+  
+#Cleaning up the type data
+car.df <- car.df %>%
+  mutate(type_clean = ifelse(grepl("pickup",type), "truck", ifelse(grepl("offroad",type),"SUV",ifelse(grepl("wagon",type),"sedan",type)))) %>%
+  mutate(type_clean = replace(type_clean,type_clean=='',"other"))
+  
+#plot of avg price by cleaned type         
+ggplot(data=car.df,aes(x=type_clean,y=price))+
+  stat_summary(geom="bar",fun="mean")+
+  labs(title='Mean Car Price by Car Type',x='Car Type',y='Mean Vehicle Price ($)')
+
+
+#Condition Variable
+ggplot(data=car.df,aes(x=condition,y=price))+
+  stat_summary(geom="bar",fun="mean")+
+  labs(title='Mean Car Price by Condition',x='Vehicle Condition',y='Mean Vehicle Price ($)')
+
+
+#cylinders - blank to other, fuel, fillna to other
+#transmission to other, size to other
+#drop size since type is better
+#drop paint color, not a signif diff
+ggplot(data=car.df,aes(x=paint_color,y=price))+
+  stat_summary(geom="bar",fun="mean")+
+  labs(title='Mean Car Price by Paint Color',x='Paint Color',y='Mean Vehicle Price ($)')
+
+```
+
+
+```{r more data cleaning}
+car.df$cylinders[car.df$cylinders==''] <- "other"
+car.df$transmission[car.df$transmission==''] <- "other"
+car.df$fuel[car.df$fuel==''] <- "other"
+car.df$drive[car.df$drive==''] <- "other"
+car.df$condition[car.df$condition==''] <- "other"
+car.df$condition[car.df$condition=='like new'] <- "excellent"
+
+```
+
+```{r datatable}
+carDT <- data.table(car.df)
+avgcount<- carDT[,.(MeanPrice=mean(price),Count=.N),by=clean_man]
+avgcount
+#Majority of cars in DS are Ford, then Chevrolet, Toyota
+#lowest average price is Saab at 5,063. 
+#78 Ferarris for sale avg price of $130k
+#Base case for manufacturer will be Acura
+```
+
+
+```{r LogTransformation}
+ggplot(data=car.df,aes(x=type_clean,y=price))+geom_boxplot(outlier.colour = "red")+
+    labs(title='Boxplot of Vehicle Price and Car Type',x='Car Type',y='Vehicle Price ($)')
+
+#Adding new column 
+car.df$Log_Price <- log(car.df$price)
+
+#Plotting price by car type and checking constant variance assumption
+#Log Price shows much more consistent variance across categories
+ggplot(data=car.df,aes(x=type_clean,y=Log_Price))+geom_boxplot(outlier.colour = "red") +
+  labs(title='Boxplot of Log Vehicle Price and Car Type',x='Car Type',y='Log Price ($)')
+
+#Histogram of LOG prices, distribution is more normal
+ggplot(car.df,aes(x=Log_Price))+geom_histogram(color='blue',fill='light blue')+
+  labs(title='Histogram of Vehicle Prices',xlab='Vehicle Price ($)',ylab='Frequency')
+```
+
+
+```{r plotting vehicles by state}
+statecount <- car.df %>% count(state)
+plot_usmap(data=statecount, values = 'n', regions = "states") + 
+  scale_fill_continuous(low = "light blue", high = "red", name = "Listed Vehicles", label = scales::comma)+
+  labs(title = "U.S. Craigslist Vehicles for Sale") +
+  theme(panel.background=element_blank(),legend.position="right")
+```
+
+###Train, Test, Split Data
+```{r final dataset}
+carfinal.df <- car.df[,c(3,7:13,22:24)]
+
+#Data Partitioning
+set.seed(42)  
+train.index <- sample(c(1:nrow(carfinal.df)), nrow(carfinal.df)*0.8)  
+train.df <- carfinal.df[train.index, ]
+valid.df <- carfinal.df[-train.index, ]
+```
+
+###Linear Regression Model
+```{r model selection}
+car.lm <- lm(price ~ ., data = train.df)
+basic.lm <- lm(price ~ 1, data = train.df)
+car.lm.select <- stepAIC(car.lm, direction = "backward")
+#car.lm.forward <- stepAIC(basic.lm, direction = "forward", scope=list(lower=basic.lm, upper=car.lm))
+#Same model conclusion with forward step method
+
+summary(car.lm.select) # Which variables were dropped?
+#summary(car.lm.forward) #Same model is selected using forward or backward selection
+
+#RMSE for validation data
+car.lm.select.pred <- predict(car.lm.select, valid.df)
+accuracy(car.lm.select.pred, valid.df$price)
+
+#RMSE for training data
+car.lm.select.train <- predict(car.lm.select, train.df)
+accuracy(car.lm.select.train, train.df$price)
+
+#Residual plots are not great. Trying again with Log Price
+#par(mfrow = c(2,2))
+#plot(car.lm.select)
+#par(mfrow = c(1,1))
+```
+
+
+
+```{r log model selection}
+logcarfinal.df <- car.df[,c(7:13,22:25)]
+
+#Data Partitioning
+logtrain.index <- sample(c(1:nrow(logcarfinal.df)), nrow(logcarfinal.df)*0.8)  
+logtrain.df <- logcarfinal.df[logtrain.index, ]
+logvalid.df <- logcarfinal.df[-logtrain.index, ]
+
+logcar.lm <- lm(Log_Price ~ ., data = logtrain.df)
+logcar.lm.select <- stepAIC(logcar.lm, direction = "backward")
+summary(logcar.lm.select) # Which variables were dropped?
+
+#RMSE for validation data
+logcar.lm.select.pred <- predict(logcar.lm.select, logvalid.df)
+accuracy(logcar.lm.select.pred, logvalid.df$Log_Price)
+
+#RMSE for training data
+logcar.lm.select.train <- predict(logcar.lm.select, logtrain.df)
+accuracy(logcar.lm.select.train, logtrain.df$Log_Price)
+
+```
+
+
+```{r plot_residuals}
+par(mfrow = c(2,2))
+plot(logcar.lm.select)
+par(mfrow = c(1,1))
+
+exp(logcar.lm.select$coefficients)
+```
+
+
+```{r predicting Vivek car}
+#condition = good, cylinders = 4, fuel - gas, odometer = 176000, title_status = clean, trans = auto, drive = fwd, man = Hyundai, type = sedan, price = 4k, age = 10
+Vivekcar <- data.frame(condition='good',cylinders='4 cylinders',fuel='gas',odometer=176000,title_status='clean',transmission='automatic',drive='fwd',age=10,clean_man='hyundai',type_clean='sedan',Log_Price=log(4000))
+
+Vivekcar2 <- data.frame(condition='excellent',cylinders='4 cylinders',fuel='hybrid',odometer=130000,title_status='clean',transmission='automatic',drive='fwd',age=11,clean_man='toyota',type_clean='sedan',Log_Price=log(7900))
+
+Vpred <- exp(predict(logcar.lm.select,Vivekcar))
+Vpred2 <- exp(predict(logcar.lm.select,Vivekcar2))
+
+cat("Predicted price of Vivek's Future Hyundai: $",Vpred,"\n")
+cat("Predicted price of Vivek's Future Prius: $",Vpred2)
+
+```
+
+```{r Ridge}
+cols = c('condition','cylinders','fuel','odometer','title_status',
+         'transmission','drive','age','clean_man','type_clean','price')
+
+dummies <- dummyVars(price~., data = carfinal.df[,cols])
+
+train_dummies = predict(dummies, newdata = train.df[,cols])
+
+test_dummies = predict(dummies, newdata = valid.df[,cols])
+
+x = as.matrix(train_dummies)
+y_train = train.df$price
+
+x_test = as.matrix(test_dummies)
+y_test = valid.df$price
+
+lambdas <- 10^seq(2,-3,by=-.1)
+
+cv_ridge <- cv.glmnet(x, y_train, alpha = 0, lambda = lambdas)
+optimal_lambda <- cv_ridge$lambda.min
+optimal_lambda
+
+```
+
+```{r Ridge_perfomance}
+# Compute R^2 from true and predicted values
+lambdas <- 10^seq(2, -3, by = -.1)
+ridge_reg = glmnet(x, y_train, nlambda = 25, alpha = 0, family = 'gaussian', lambda = lambdas)
+
+summary(ridge_reg)
+
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+
+# Prediction and evaluation on train data
+predictions_train <- predict(ridge_reg, s = optimal_lambda, newx = x)
+eval_results(y_train, predictions_train, train.df)
+
+# Prediction and evaluation on test data
+predictions_test <- predict(ridge_reg, s = optimal_lambda, newx = x_test)
+eval_results(y_test, predictions_test, valid.df)
+```
+
+
+```{r regressionTree}
+#In order for the tree to run, categorical variables cannot have more than 32 levels. Limited the car table to include only the top 30 manufacturers 
+carDT <- data.table(carfinal.df)
+Man_Sort <- carDT[,.(Count = .N),by=clean_man][order(-Count)]
+Man_Sort2 <- Man_Sort[1:30,clean_man]
+cartree <- carfinal.df[carfinal.df$clean_man %in% Man_Sort2,]
+cartree$condition <- as.factor(cartree$condition)
+cartree$cylinders <- as.factor(cartree$cylinders)
+cartree$fuel <- as.factor(cartree$fuel)
+cartree$title_status <- as.factor(cartree$title_status)
+cartree$transmission <- as.factor(cartree$transmission)
+cartree$drive <- as.factor(cartree$drive)
+cartree$clean_man <- as.factor(cartree$clean_man)
+cartree$type_clean <- as.factor(cartree$type_clean)
+
+
+train <- sample(1:nrow(cartree), nrow(cartree)*0.8)
+
+anova.model <- rpart(price ~ ., data=cartree, subset = train, 
+                     control = rpart.control(maxdepth = 5), method = "anova")
+# plot tree - use prp() for customizing the plot
+#Used digits = -3 to remove scientific notation
+prp(anova.model, type = 1, extra = 1, split.font = 2, varlen = -10,digits=-3)  
+rpart.rules(anova.model, cover = TRUE)
+
+```
+
+
+```{r RegressionTree_Performance}
+# Prediction and evaluation on train data
+predictions_train_tree <- predict(anova.model, cartree[train,])
+eval_results(cartree[train, 'price'], predictions_train_tree, cartree[train,])
+
+
+# Prediction and evaluation on test data
+predictions_test_tree <- predict(anova.model, cartree[-train,])
+eval_results(cartree[-train, 'price'], predictions_test_tree, cartree[-train,])
+
+
+```
+
